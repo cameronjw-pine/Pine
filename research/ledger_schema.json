@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "htc-ledger-1",
+  "title": "Harmonic Time Circle research-ledger record",
+  "description": "One record per qualified confirmed bar, emitted by indicators/HarmonicTimeCircle.pine via alert() webhook. Outcome fields (mfe, mae, outcome) are appended downstream by the collector; Pine cannot see the future without repainting.",
+  "type": "object",
+  "required": [
+    "schema", "symbol", "tf", "bar_time_utc", "ny_tod", "phase",
+    "nearest_node", "family", "offset_min", "chi", "chi_class",
+    "salience", "confluence", "nesting", "displacement_atr",
+    "o", "h", "l", "c"
+  ],
+  "properties": {
+    "schema": { "const": "htc-ledger-1" },
+    "symbol": { "type": "string" },
+    "tf": { "type": "string", "description": "TradingView timeframe.period" },
+    "bar_time_utc": { "type": "integer", "description": "bar open, unix ms" },
+    "ny_tod": { "type": "string", "pattern": "^\\d{2}:\\d{2}:\\d{2}$" },
+    "phase": { "type": "number", "minimum": 0, "maximum": 1 },
+    "nearest_node": { "type": "string" },
+    "family": { "enum": ["CLOCK", "PYTH", "GOLD"] },
+    "offset_min": { "type": "number", "description": "signed minutes, bar time minus node time" },
+    "chi": { "type": ["number", "null"], "description": "comma-normalized residual vs nearest harmonic node" },
+    "chi_class": { "type": "string", "description": "χ≈0, χ≈±1/12, χ≈±1/6, χ≈±1/4, χ≈±1/2, or 'unclassified'" },
+    "salience": { "type": "number", "minimum": 0, "maximum": 1 },
+    "confluence": { "type": "integer", "minimum": 0, "maximum": 3 },
+    "nesting": { "type": "integer", "minimum": 0 },
+    "displacement_atr": { "type": "number" },
+    "o": { "type": "number" },
+    "h": { "type": "number" },
+    "l": { "type": "number" },
+    "c": { "type": "number" },
+
+    "mfe": { "type": "number", "description": "appended downstream: max favorable excursion over the evaluation horizon" },
+    "mae": { "type": "number", "description": "appended downstream: max adverse excursion" },
+    "outcome": { "type": "string", "description": "appended downstream: reversal | continuation | sweep | none" }
+  }
+}

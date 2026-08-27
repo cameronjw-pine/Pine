@@ -1,0 +1,88 @@
+//@version=6
+// ═════════════════════════════════════════════════════════════════════════════
+//  HarmonicTime — reusable math primitives for the ICT Harmonic Time Circle
+//
+//  Pure functions only: no drawing, no security calls, no repaint surface.
+//  Publish once on TradingView, then `import <user>/HarmonicTime/1 as ht`
+//  from indicators and strategies. Formal definitions: docs/MATH_SPEC.md.
+// ═════════════════════════════════════════════════════════════════════════════
+library("HarmonicTime")
+
+// ── constants (exported as functions: Pine cannot export raw constants) ──────
+// @function Golden ratio φ = (1+√5)/2.
+export phi() => 1.6180339887498949
+
+// @function φ³, the golden Descartes-chain scale factor.
+export phiCubed() => 4.2360679774997896
+
+// @function log base 2.
+// @param x value > 0
+export log2(float x) => math.log(x) / math.log(2.0)
+
+// @function Wrap any hour value onto the 24 h circle → [0, 24).
+export wrap24(float x) => ((x % 24.0) + 24.0) % 24.0
+
+// @function Normalized daily phase p = t/24 mod 1.
+// @param tHours NY time in hours
+export phase(float tHours) => wrap24(tHours) / 24.0
+
+// @function Angular phase θ = 360·p in degrees (1 h = 15°).
+export degrees(float tHours) => phase(tHours) * 360.0
+
+// @function Pitch-class position c = 1200·p in cents (1 h = 50 c).
+export cents(float tHours) => phase(tHours) * 1200.0
+
+// @function Temporal position of a musical ratio: T(r) = 24·log2(r) mod 24.
+// @param r frequency ratio, e.g. 3.0/2.0 → 14:02:21
+export ratioTime(float r) => wrap24(24.0 * log2(r))
+
+// @function Golden angle node 24·φ⁻² = 09:10:01.86 NY.
+export goldenA() => 24.0 * (2.0 - phi())
+
+// @function Golden complement node 24·φ⁻¹ = 14:49:58.14 NY.
+export goldenB() => 24.0 * (phi() - 1.0)
+
+// @function Temporal Pythagorean comma 24·log2(3¹²/2¹⁹) = 0.4692002 h (28m09.12s).
+export commaHours() => 24.0 * log2(math.pow(3.0, 12) / math.pow(2.0, 19))
+
+// @function Signed circular offset t − node, wrapped to (−12, 12] hours.
+export signedOffset(float t, float node) =>
+    float raw = t - node
+    raw - 24.0 * math.round(raw / 24.0)
+
+// @function Circular distance between two times on the 24 h circle, in hours.
+export circDist(float a, float b) => math.abs(signedOffset(a, b))
+
+// @function Comma-normalized residual χ = (t − node)/C_time (paper §8.1).
+export commaResidual(float t, float node) => signedOffset(t, node) / commaHours()
+
+// @function Gaussian salience kernel K = exp(−½(d/σ)²).
+// @param dHours   circular distance in hours
+// @param sigmaMin bandwidth in minutes
+export gaussKernel(float dHours, float sigmaMin) =>
+    math.exp(-0.5 * math.pow(dHours * 60.0 / sigmaMin, 2))
+
+// @function Golden-axis Descartes chain diameter D_n = 24/[φ³(n²+2)] hours.
+//           n=1..4 → 113.31 / 56.66 / 30.90 / 18.89 minutes (paper §7.2).
+export descartesDiameterHours(int n) => 24.0 / (phiCubed() * (n * n + 2))
+
+// @function Curvature law of the symmetric golden chain: κ_n·R = n² + 2.
+export descartesCurvature(int n) => n * n + 2
+
+// @function Vertical center height of chain circle n: y_n = 2·n·r_n (in R units).
+export descartesHeight(int n) => 2.0 * n / float(n * n + 2)
+
+// @function Temporal reflection about the noon inversion axis: t* = 24 − t.
+//           Maps φ⁻²↔φ⁻¹ and 4/3↔3/2 onto each other (paper §5, §10.1).
+export noonReflect(float t) => wrap24(24.0 - wrap24(t))
+
+// @function True if NY time-of-day t lies inside window [s, e) with midnight wrap.
+export inWindow(float t, float s, float e) =>
+    float tw = wrap24(t)
+    s <= e ? (tw >= s and tw < e) : (tw >= s or tw < e)
+
+// @function Interval-as-circle center on the temporal baseline: (a+b)/2 (paper §6).
+export intervalCenter(float a, float b) => (a + b) / 2.0
+
+// @function Interval-as-circle radius: (b−a)/2 (paper §6).
+export intervalRadius(float a, float b) => (b - a) / 2.0
