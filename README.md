@@ -28,12 +28,16 @@ research/analyze_ledger.py           analysis skeleton (χ clustering, node-vs-d
 
 1. Open TradingView → Pine Editor → paste
    `indicators/HarmonicTimeCircle.pine` → *Add to chart* (intraday timeframe).
-2. By default you get **Macro Tracker°-style window brackets**: a "MACRO"
-   label over each registered window with a bracket that rides above the
-   highs (visual technique adapted from the open-source *ICT Algorithmic
-   Macro Tracker° by toodegrees*, MPL 2.0), covering the hourly :50–:10
-   macros plus 15:15–15:45. A "New Pane" mode renders the windows as band
-   boxes instead. Optional framework extras (off by default):
+2. By default you get **harmonic node brackets** in the Macro Tracker°
+   style (visual technique adapted from the open-source *ICT Algorithmic
+   Macro Tracker° by toodegrees*, MPL 2.0): a labeled bracket riding above
+   the highs around each exact node — `P4 09:57:39 → TT 12:00:00 →
+   P5 14:02:21 → GOLDEN 14:49:58 → 20:00`, plus the noon comma envelope
+   edges (d5 11:45:55 / A4 12:14:05), 128/81 15:50:37 and 243/128
+   22:11:44 — each spanning node ± 10 minutes (configurable). The same
+   bracket rendering can be switched on for ICT macro/SB/range/kill-zone
+   windows, and a "New Pane" mode renders band boxes instead. Optional
+   framework extras (off by default):
    - **Future-time rail** — the next nodes with countdowns, e.g.
      `P4 09:57:39 → TT 12:00:00 → P5 14:02:21 → φ⁻¹ 14:49:58`.
    - **Projected node lines** within a configurable look-ahead horizon.

@@ -103,10 +103,25 @@ bool   bktShowLbl  = input.bool(true,  "Label?",       group = G_BKT, inline = "
 bool   bktShowTime = input.bool(false, "Show time?",   group = G_BKT, inline = "bo")
 bool   bktExt      = input.bool(false, "Projections?", group = G_BKT, inline = "bo",
      tooltip = "Extends bracket lines toward price.")
-bool   bktMacros = input.bool(true,  "Macros", group = G_BKT, inline = "bw")
-bool   bktSB     = input.bool(true,  "SB",     group = G_BKT, inline = "bw")
+bool   bktNodes  = input.bool(true,  "Nodes",  group = G_BKT, inline = "bw")
+bool   bktMacros = input.bool(false, "Macros", group = G_BKT, inline = "bw")
+bool   bktSB     = input.bool(false, "SB",     group = G_BKT, inline = "bw")
 bool   bktRanges = input.bool(false, "Ranges", group = G_BKT, inline = "bw")
 bool   bktKZ     = input.bool(false, "KZ",     group = G_BKT, inline = "bw")
+
+string G_NB = "Harmonic node brackets (± half-width around the exact node)"
+float nodeHalfW = input.float(10.0, "Half-width (minutes)", minval = 1, maxval = 60, group = G_NB,
+     tooltip = "Each node bracket spans node ± this many minutes, drawn in the Macro Tracker° bracket style.")
+bool bnP4 = input.bool(true,  "P4 4/3 — 09:57:39",                 group = G_NB)
+bool bnD5 = input.bool(true,  "Comma edge d5 1024/729 — 11:45:55", group = G_NB)
+bool bnTT = input.bool(true,  "TT √2 — 12:00:00",                  group = G_NB)
+bool bnA4 = input.bool(true,  "Comma edge A4 729/512 — 12:14:05",  group = G_NB)
+bool bnP5 = input.bool(true,  "P5 3/2 — 14:02:21",                 group = G_NB)
+bool bnGB = input.bool(true,  "Golden φ⁻¹ — 14:49:58",             group = G_NB)
+bool bnM6 = input.bool(true,  "m6 128/81 — 15:50:37",              group = G_NB)
+bool bn20 = input.bool(true,  "20:00 boundary",                    group = G_NB)
+bool bnM7 = input.bool(true,  "M7 243/128 — 22:11:44",             group = G_NB)
+bool bnGA = input.bool(false, "Golden φ⁻² — 09:10:02",             group = G_NB)
 
 string G_VIS  = "Visible layer (framework extras, off by default)"
 bool   showRail  = input.bool(false, "Future-time rail", group = G_VIS)
@@ -133,8 +148,10 @@ bool  ledgerOn  = input.bool(false, "Emit research-ledger JSON on qualified even
 f_wrap24(float x) => ((x % 24.0) + 24.0) % 24.0
 f_ratioTime(float r) => f_wrap24(24.0 * f_log2(r))          // T(r) = 24·log2(r) mod 24
 
-var array<Node>   nodes = array.new<Node>()
-var array<Window> wins  = array.new<Window>()
+var array<Node>   nodes    = array.new<Node>()
+var array<Window> wins     = array.new<Window>()      // ICT windows: nesting + gating
+var array<Window> nodeWins = array.new<Window>()      // harmonic node brackets: visual only
+var array<Window> bktList  = array.new<Window>()      // combined bracket render list
 
 f_pad2(int n) => (n < 10 ? "0" : "") + str.tostring(n)
 
@@ -174,6 +191,11 @@ f_addWindows(string cfg, string kind) =>
                 if not na(s) and not na(e)
                     array.push(wins, Window.new(s, e, kind + " " + f_fmtHM(s), kind))
 
+f_addNodeWin(bool en, float center, string lbl) =>
+    if en
+        array.push(nodeWins, Window.new(f_wrap24(center - nodeHalfW / 60.0),
+         f_wrap24(center + nodeHalfW / 60.0), lbl, "Node"))
+
 if barstate.isfirst
     // Clock lattice: even hours ≡ 12-TET (2 h = 100 cents). Paper §2.
     for h = 0 to 22 by 2
@@ -201,6 +223,25 @@ if barstate.isfirst
         f_addWindows(cfgRanges, "Range")
     if enKZ
         f_addWindows(cfgKZ, "KZ")
+    // Harmonic node brackets — the paper's rail P4 → TT → P5 → golden → 20:00
+    // plus the noon comma envelope edges, m6 and M7 (visual layer only).
+    f_addNodeWin(bnGA, GOLD_A,                       "φ⁻²")
+    f_addNodeWin(bnP4, f_ratioTime(4.0 / 3.0),       "P4")
+    f_addNodeWin(bnD5, f_ratioTime(1024.0 / 729.0),  "d5")
+    f_addNodeWin(bnTT, 12.0,                         "TT")
+    f_addNodeWin(bnA4, f_ratioTime(729.0 / 512.0),   "A4")
+    f_addNodeWin(bnP5, f_ratioTime(3.0 / 2.0),       "P5")
+    f_addNodeWin(bnGB, GOLD_B,                       "GOLDEN")
+    f_addNodeWin(bnM6, f_ratioTime(128.0 / 81.0),    "128/81")
+    f_addNodeWin(bn20, 20.0,                         "20:00")
+    f_addNodeWin(bnM7, f_ratioTime(243.0 / 128.0),   "243/128")
+    // combined render list for the bracket engine
+    if array.size(wins) > 0
+        for i = 0 to array.size(wins) - 1
+            array.push(bktList, array.get(wins, i))
+    if array.size(nodeWins) > 0
+        for i = 0 to array.size(nodeWins) - 1
+            array.push(bktList, array.get(nodeWins, i))
 
 f_famEnabled(string fam) =>
     fam == FAM_CLOCK ? enClock : fam == FAM_PYTH ? enPyth : enGold
@@ -351,28 +392,32 @@ var array<label> lblPool = array.new<label>()
 var array<line>  extPool = array.new<line>()
 var array<box>   boxPool = array.new<box>()
 
-if array.size(curV) < array.size(wins)
-    for i = array.size(curV) to array.size(wins) - 1
+if array.size(curV) < array.size(bktList)
+    for i = array.size(curV) to array.size(bktList) - 1
         array.push(curV, line(na))
         array.push(curH, line(na))
         array.push(curLbl, label(na))
         array.push(curBox, box(na))
 
 f_bracketKind(string kind) =>
-    kind == "Macro" ? bktMacros : kind == "SB" ? bktSB : kind == "Range" ? bktRanges : bktKZ
+    kind == "Node" ? bktNodes : kind == "Macro" ? bktMacros : kind == "SB" ? bktSB :
+     kind == "Range" ? bktRanges : bktKZ
 
 f_kindText(string kind) =>
     kind == "Macro" ? "MACRO" : kind == "SB" ? "SILVER BULLET" : kind == "Range" ? "RANGE" : "KILLZONE"
 
-if timeframe.isintraday and array.size(wins) > 0
-    for i = 0 to array.size(wins) - 1
-        Window w = array.get(wins, i)
+if timeframe.isintraday and array.size(bktList) > 0
+    for i = 0 to array.size(bktList) - 1
+        Window w = array.get(bktList, i)
         if f_bracketKind(w.kind)
             bool actNow  = f_inWindow(w, nyH)
             bool actPrev = bar_index > 0 and f_inWindow(w, nyH[1])
-            string kzTime = f_fmtHM(w.s) + " - " + f_fmtHM(w.e)
-            string txt    = f_kindText(w.kind) + (bktShowTime ? "\n" + kzTime : "")
-            string tt     = f_kindText(w.kind) + "\n" + kzTime
+            // node brackets are labeled by the node itself; windows by their kind
+            string baseTxt = w.kind == "Node" ? w.name : f_kindText(w.kind)
+            string kzTime  = w.kind == "Node" ? f_fmtHMS(math.avg(w.s, w.e)) :
+                 f_fmtHM(w.s) + " - " + f_fmtHM(w.e)
+            string txt     = baseTxt + (bktShowTime ? "\n" + kzTime : "")
+            string tt      = baseTxt + "\n" + kzTime
 
             if bktMode == "On Chart"
                 // window opens: start tick + running top line + label
