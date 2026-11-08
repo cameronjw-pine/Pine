@@ -20,9 +20,13 @@ plt.rcParams["lines.scale_dashes"] = False
 plt.rcParams["font.family"] = "DejaVu Sans"
 
 # ---- TradingView chrome (dark theme) --------------------------------------
-BG, GRID = "#131722", "#1e222d"
+THEMES = {   # TradingView chrome; fg = chart.fg_color, bg = chart.bg_color
+    "dark": dict(bg="#131722", grid="#1e222d", axis="#B2B5BE", sep="#2A2E39", fg="#D1D4DC",
+                 tip_bg="#2A2E39", tip_ec="#434651"),
+    "light": dict(bg="#FFFFFF", grid="#F0F3FA", axis="#131722", sep="#E0E3EB", fg="#131722",
+                  tip_bg="#FFFFFF", tip_ec="#B2B5BE"),
+}
 UP, DOWN = "#26a69a", "#ef5350"
-AXIS_TXT, SEP = "#B2B5BE", "#2A2E39"
 SCALE_W, TIME_H = 70, 28         # CSS px
 CAP_H = 22                       # CSS px, mock caption strip above the chart (not part of the chart)
 AXIS_FS = 11                     # CSS px
@@ -39,19 +43,19 @@ LAT_STYLE = {                    # h -> (colour, width, style, transp)
     4: (GOLD, 1, "dotted", 80),
 }
 PDHL = ("#808080", 1, "dashed", 0)
-INELIG = ("#9E9E9E", "dotted", 85)
+INELIG = ("#9E9E9E", "dotted", 70)                      # r1
 MARKER = {
-    "PENDING": ("#B0BEC5", 0),
-    "REJECT": ("#26A69A", 0),
-    "BREAK": ("#EF5350", 0),
-    "INDETERMINATE": ("#9E9E9E", 0),
-    "CENSORED": ("#9E9E9E", 60),
+    "PENDING": ("#E8A317", 0),                          # r1
+    "REJECT": ("#2962FF", 0),
+    "BREAK": ("#E040FB", 50),
+    "INDETERMINATE": ("#787B86", 50),
+    "CENSORED": ("#787B86", 80),
 }
 BOX_FILL = (GOLD, 85)
-REJ_LINE = ("#26A69A", 1, "dashed")
-BRK_LINE = ("#EF5350", 1, "dotted")
+REJ_LINE = ("#2962FF", 1, "dashed")                      # r1
+BRK_LINE = ("#E040FB", 1, "dotted")
 LABEL_MAX_H = 2
-PINE_TABLE_TEXT = "#000000"      # Pine table.cell default text_color (none given in §3)
+PANEL_BG_TRANSP = 20             # r1: bgcolor=color.new(chart.bg_color, 20), text_color=chart.fg_color
 
 
 def alpha(transp):
@@ -71,7 +75,8 @@ def dashes(style, width):
 
 class Chart:
     def __init__(self, eng, t_from, t_to, asof, right_bars=6, panel_at=None,
-                 tooltips=False, focus=None, title_note=""):
+                 tooltips=False, focus=None, title_note="", theme="dark"):
+        self.th = THEMES[theme]
         self.eng = eng
         self.t_from, self.t_to, self.asof = t_from, t_to, asof
         self.k_from = t_from // M15
@@ -88,10 +93,10 @@ class Chart:
     # -------------------------------------------------------------------
     def render(self, path):
         eng = self.eng
-        fig = plt.figure(figsize=(W_PX / DPI, H_PX / DPI), dpi=DPI, facecolor=BG)
+        fig = plt.figure(figsize=(W_PX / DPI, H_PX / DPI), dpi=DPI, facecolor=self.th["bg"])
         self.fig = fig
         sw, th, ch = SCALE_W * CSS / W_PX, TIME_H * CSS / H_PX, CAP_H * CSS / H_PX
-        ax = fig.add_axes([0, th, 1 - sw, 1 - th - ch], facecolor=BG)
+        ax = fig.add_axes([0, th, 1 - sw, 1 - th - ch], facecolor=self.th["bg"])
         self.ax = ax
         for s in ax.spines.values():
             s.set_visible(False)
@@ -111,12 +116,13 @@ class Chart:
 
         self._grid_and_axes(ax, y0, y1, x0, x1)
         self._candles(ax, bars)
+        self._bars = bars
         self._lattices(ax)
         self._events(ax)
         self._header(fig)
         if self.panel_at is not None:
             self._panel(fig, ax)
-        fig.savefig(path, dpi=DPI, facecolor=BG)
+        fig.savefig(path, dpi=DPI, facecolor=self.th["bg"])
         self.overlap = self._label_overlap(fig)
         plt.close(fig)
         return self
@@ -131,9 +137,9 @@ class Chart:
         p = math.ceil(y0 / step) * step
         sep_x = 1 - SCALE_W * CSS / W_PX
         while p < y1:
-            ax.axhline(p, color=GRID, lw=1 * PT, zorder=0)
+            ax.axhline(p, color=self.th["grid"], lw=1 * PT, zorder=0)
             yf = self._fig_y(p)
-            fig.text(sep_x + 8 * CSS / W_PX, yf, f"{p:.2f}", color=AXIS_TXT,
+            fig.text(sep_x + 8 * CSS / W_PX, yf, f"{p:.2f}", color=self.th["axis"],
                      fontsize=AXIS_FS * PT, va="center", ha="left")
             p += step
         # time ticks
@@ -143,21 +149,21 @@ class Chart:
         th = TIME_H * CSS / H_PX
         while self.x(t) < x1:
             if self.x(t) >= x0 and (t // 3600) % hstep == 0:
-                ax.axvline(self.x(t), color=GRID, lw=1 * PT, zorder=0)
+                ax.axvline(self.x(t), color=self.th["grid"], lw=1 * PT, zorder=0)
                 d = utc(t)
                 txt = d.strftime("%-d %b") if d.hour == 0 and d.minute == 0 else d.strftime("%H:%M")
                 xf = self._fig_x(self.x(t))
                 if 24 * CSS / W_PX < xf < sep_x - 24 * CSS / W_PX:
-                    fig.text(xf, th / 2, txt, color=AXIS_TXT, fontsize=AXIS_FS * PT,
+                    fig.text(xf, th / 2, txt, color=self.th["axis"], fontsize=AXIS_FS * PT,
                              va="center", ha="center",
                              weight="bold" if d.hour == 0 else "normal")
             t += 3600
         # scale separators
-        fig.add_artist(plt.Line2D([sep_x, sep_x], [0, 1], color=SEP, lw=1 * PT))
-        fig.add_artist(plt.Line2D([0, 1], [th, th], color=SEP, lw=1 * PT))
+        fig.add_artist(plt.Line2D([sep_x, sep_x], [0, 1], color=self.th["sep"], lw=1 * PT))
+        fig.add_artist(plt.Line2D([0, 1], [th, th], color=self.th["sep"], lw=1 * PT))
         ch = 1 - CAP_H * CSS / H_PX
-        fig.add_artist(plt.Line2D([0, 1], [ch, ch], color=SEP, lw=1 * PT))
-        fig.text(1 - SCALE_W * CSS / W_PX / 2, th / 2, "UTC", color=AXIS_TXT,
+        fig.add_artist(plt.Line2D([0, 1], [ch, ch], color=self.th["sep"], lw=1 * PT))
+        fig.text(1 - SCALE_W * CSS / W_PX / 2, th / 2, "UTC", color=self.th["axis"],
                  fontsize=AXIS_FS * PT, va="center", ha="center")
 
     def _fig_y(self, p):
@@ -188,7 +194,9 @@ class Chart:
         return lats[-2:]                       # [Display] lattice days drawn = 2
 
     def _lattices(self, ax):
-        for lat in self.drawn_lattices():
+        drawn = self.drawn_lattices()
+        for lat in drawn:
+            latest = lat is drawn[-1]          # r1: node labels on the latest anchor day only
             xa, xb = self.x(lat.pub_time), self.x(lat.end_time)
             for nd, lo, hi, lev in lat.bands:
                 col, w, sty, tr = LAT_STYLE[nd.h]
@@ -197,7 +205,7 @@ class Chart:
                 y = float(lev)
                 ax.plot([xa, xb], [y, y], color=col, alpha=alpha(tr), lw=w * PT, zorder=4,
                         **dashes(sty, 1))
-                if nd.h <= LABEL_MAX_H:
+                if latest and nd.h <= LABEL_MAX_H:
                     ltr = 0                          # transp capped at 0 for h<=2
                     self._end_label(ax, xb, y, nd.label, col, alpha(ltr), "node")
             for name, val in (("PDH", lat.H), ("PDL", lat.L)):
@@ -244,9 +252,9 @@ class Chart:
         # place the box on the rejection side, away from the tolerance box / break line
         dy = -26 if side == "below" else 26
         ax.annotate(text, (x, y), xytext=(14 * PT, dy * PT), textcoords="offset points",
-                    color="#D1D4DC", fontsize=TINY_FS * PT, va="center", ha="left", zorder=9,
-                    bbox=dict(boxstyle="round,pad=0.35", fc="#2A2E39", ec="#434651", lw=0.5 * PT),
-                    arrowprops=dict(arrowstyle="-", color="#434651", lw=0.5 * PT))
+                    color=self.th["fg"], fontsize=TINY_FS * PT, va="center", ha="left", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.35", fc=self.th["tip_bg"], ec=self.th["tip_ec"], lw=0.5 * PT),
+                    arrowprops=dict(arrowstyle="-", color=self.th["tip_ec"], lw=0.5 * PT))
 
     # -------------------------------------------------------------------
     def _header(self, fig):
@@ -254,7 +262,7 @@ class Chart:
         if self.title_note:          # mock caption, outside the chart area
             fig.text(8 * CSS / W_PX, 1 - CAP_H * CSS / H_PX / 2, "MOCK (not TradingView) · " + self.title_note,
                      color="#787B86", fontsize=10 * PT, va="center", ha="left")
-        fig.text(8 * CSS / W_PX, cap - 8 * CSS / H_PX, "BTCUSDC · 15 · BINANCE", color="#D1D4DC",
+        fig.text(8 * CSS / W_PX, cap - 8 * CSS / H_PX, "BTCUSDC · 15 · BINANCE", color=self.th["fg"],
                  fontsize=13 * PT, va="top", ha="left")
 
     def _panel(self, fig, ax):
@@ -275,18 +283,22 @@ class Chart:
         cw = [w + 2 * pad_x for w in widths]
         rh = hmax + 2 * pad_y
         axb = ax.get_window_extent(r)
-        right = axb.x1 - 4 * CSS
-        top = axb.y1 - 4 * CSS
-        left = right - sum(cw)
+        left = axb.x0 + 4 * CSS                       # position.bottom_left
+        bottom = axb.y0 + 4 * CSS
+        right = left + sum(cw)
+        top = bottom + len(rows) * rh
+        fig.add_artist(Rectangle((left / W_PX, bottom / H_PX), (right - left) / W_PX, (top - bottom) / H_PX,
+                                 transform=fig.transFigure, facecolor=self.th["bg"],
+                                 alpha=alpha(PANEL_BG_TRANSP), edgecolor="none", lw=0, zorder=10))
         for i, row in enumerate(rows):
             yc = top - (i + 0.5) * rh
             xc = left
             for j in range(2):
                 txt = row[j] if j < len(row) else ""
-                fig.text((xc + cw[j] / 2) / W_PX, yc / H_PX, txt, color=PINE_TABLE_TEXT,
-                         fontsize=fs, va="center", ha="center")   # Pine default halign center
+                fig.text((xc + pad_x) / W_PX, yc / H_PX, txt, color=self.th["fg"],
+                         fontsize=fs, va="center", ha="left", zorder=11)   # left-aligned
                 xc += cw[j]
-        self.panel_box = (left, top - len(rows) * rh, right, top)
+        self.panel_box = (left, bottom, right, top)
 
     # -------------------------------------------------------------------
     def _label_overlap(self, fig):
@@ -316,6 +328,14 @@ class Chart:
             for bb, txt, kind in boxes:
                 if bb.x1 > l and bb.x0 < rr and bb.y1 > b and bb.y0 < t:
                     self.panel_hits.append(txt)
+        # candles (wick extent) partly covered by the panel table
+        self.candles_under_panel = 0
+        if getattr(self, "panel_box", None):
+            l, b, rr, t = self.panel_box
+            for i, (k, (o, h, lo, c, _)) in enumerate(self._bars):
+                (xa, ya), (xb, yb) = self.ax.transData.transform([(i - 0.35, float(lo)), (i + 0.35, float(h))])
+                if xb > l and xa < rr and yb > b and ya < t:
+                    self.candles_under_panel += 1
         # vertical spacing (device px) between adjacent visible labels sharing an x anchor
         gaps = []
         bykey = {}

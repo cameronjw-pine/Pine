@@ -39,11 +39,12 @@ int   MAX_MARKERS = 300
 int   MAX_KEYS    = 200
 
 color C_LAT  = #E8A317                          // lattice gold
-color C_DIM  = #9E9E9E                          // ineligible / indeterminate
+color C_DIM  = #9E9E9E                          // ineligible lattice
 color C_PD   = #808080                          // PDH / PDL
-color C_PEND = #B0BEC5
-color C_REJ  = #26A69A
-color C_BRK  = #EF5350
+color C_PEND = #E8A317                          // marker PENDING (r1)
+color C_REJ  = #2962FF                          // REJECT marker + reject-target line (r1)
+color C_BRK  = #E040FB                          // BREAK marker (transp 50) + break line (r1)
+color C_IND  = #787B86                          // INDETERMINATE (transp 50) / CENSORED (transp 80) (r1)
 color C_NONE = color.new(#000000, 100)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,8 +89,9 @@ type Ev
 // Drawings of one published lattice day.
 type DayDraw
     int          day
-    array<line>  lns
-    array<label> lbs
+    array<line>  lns                            // 41 lattice lines + PDH + PDL
+    array<label> lbs                            // node labels (latest anchor day only)
+    array<label> pdl                            // PDH / PDL labels
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  3 · DATA REQUEST (single call, global scope)
@@ -235,7 +237,7 @@ f_px(float x) => f_num(x, PX_DEC, true)
 f_2(float x)  => f_num(x, 2, false)
 
 f_lineCol(int h, bool elig) =>
-    elig ? color.new(C_LAT, h <= 1 ? 0 : h == 2 ? 40 : h == 3 ? 65 : 80) : color.new(C_DIM, 85)
+    elig ? color.new(C_LAT, h <= 1 ? 0 : h == 2 ? 40 : h == 3 ? 65 : 80) : color.new(C_DIM, 70)
 f_lineStyle(int h, bool elig) =>
     not elig or h >= 3 ? line.style_dotted : line.style_solid
 f_lineW(int h) =>
@@ -246,7 +248,7 @@ f_lblCol(int h, bool elig) =>
 f_stName(int st) =>
     st == 0 ? "PENDING" : st == 1 ? "REJECT" : st == 2 ? "BREAK" : st == 3 ? "INDETERMINATE" : "CENSORED"
 f_stCol(int st) =>
-    st == 0 ? C_PEND : st == 1 ? C_REJ : st == 2 ? C_BRK : st == 3 ? C_DIM : color.new(C_DIM, 60)
+    st == 0 ? C_PEND : st == 1 ? C_REJ : st == 2 ? color.new(C_BRK, 50) : st == 3 ? color.new(C_IND, 50) : color.new(C_IND, 80)
 
 f_tip(Ev e) =>
     array.get(nLbl, e.band) + " · " + (e.side == 1 ? "from below" : "from above") + " · ATR " + f_px(e.atr) +
@@ -407,6 +409,7 @@ f_drawDay(int d, int pubT, float lo, float hi, bool elig) =>
     int xEnd = d + MS_DAY
     array<line>  ls = array.new<line>()
     array<label> lb = array.new<label>()
+    array<label> pd = array.new<label>()
     for i = 0 to N_NODES - 1
         int   hh = array.get(nHt, i)
         float y  = array.get(bLvl, i)
@@ -417,17 +420,26 @@ f_drawDay(int d, int pubT, float lo, float hi, bool elig) =>
                  style = label.style_label_left, textcolor = f_lblCol(hh, elig), size = size.tiny))
     array.push(ls, line.new(pubT, hi, xEnd, hi, xloc = xloc.bar_time, color = C_PD, style = line.style_dashed, width = 1))
     array.push(ls, line.new(pubT, lo, xEnd, lo, xloc = xloc.bar_time, color = C_PD, style = line.style_dashed, width = 1))
-    array.push(lb, label.new(xEnd, hi, "PDH", xloc = xloc.bar_time, color = C_NONE,
+    array.push(pd, label.new(xEnd, hi, "PDH", xloc = xloc.bar_time, color = C_NONE,
          style = label.style_label_left, textcolor = C_PD, size = size.tiny))
-    array.push(lb, label.new(xEnd, lo, "PDL", xloc = xloc.bar_time, color = C_NONE,
+    array.push(pd, label.new(xEnd, lo, "PDL", xloc = xloc.bar_time, color = C_NONE,
          style = label.style_label_left, textcolor = C_PD, size = size.tiny))
-    DayDraw.new(d, ls, lb)
+    DayDraw.new(d, ls, lb, pd)
 
 f_delDay(DayDraw dd) =>
     for ln in dd.lns
         line.delete(ln)
     for lb in dd.lbs
         label.delete(lb)
+    for lb in dd.pdl
+        label.delete(lb)
+    true
+
+// node labels live on the latest anchor day only (r1)
+f_unlabel(DayDraw dd) =>
+    for lb in dd.lbs
+        label.delete(lb)
+    array.clear(dd.lbs)
     true
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,6 +573,8 @@ if latTF
                             array.set(bLvl, i, pL + f * (pH - pL))
                             array.set(bLo,  i, pL + (f - EPS) * (pH - pL))
                             array.set(bHi,  i, pL + (f + EPS) * (pH - pL))
+                        if array.size(days) > 0
+                            f_unlabel(array.get(days, array.size(days) - 1))
                         array.push(days, f_drawDay(d, ibT, pL, pH, dayElig))
                         while array.size(days) > daysN
                             f_delDay(array.shift(days))
@@ -655,9 +669,9 @@ if array.size(pend) > 0
 // ─────────────────────────────────────────────────────────────────────────────
 //  11 · PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-var table panel = table.new(position.top_right, 2, 8)
+var table panel = table.new(position.bottom_left, 2, 8, border_width = 0)
 color P_TXT = chart.fg_color
-color P_BG  = color.new(chart.bg_color, 10)
+color P_BG  = color.new(chart.bg_color, 20)
 
 f_row(table tb, int r, string k, string v) =>
     table.cell(tb, 0, r, k, text_color = P_TXT, bgcolor = P_BG, text_size = size.tiny, text_halign = text.align_left)

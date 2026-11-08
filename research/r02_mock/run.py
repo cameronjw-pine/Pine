@@ -47,6 +47,16 @@ def main():
                  title_note=f"{a.day} UTC · markers as of 24:00 · panel as of 16:00")
     full.render(os.path.join(a.out_dir, "mock_day_full.png"))
 
+    light = Chart(eng, day0 - 6 * 3600, day0 + DAY, asof=day0 + DAY, panel_at=day0 + 16 * 3600, theme="light",
+                  title_note=f"{a.day} UTC · LIGHT THEME · markers as of 24:00 · panel as of 16:00")
+    light.render(os.path.join(a.out_dir, "mock_day_full_light.png"))
+
+    # extra: light theme at a moment with pending events (candles only up to that moment)
+    pt = day0 + 13 * 3600 + 15 * 60
+    Chart(eng, pt - 5 * 3600, pt, asof=pt, right_bars=14, theme="light",
+          title_note=f"{a.day} 13:15 UTC · LIGHT THEME · live snapshot with pending markers and geometry").render(
+        os.path.join(a.out_dir, "extra_light_pending_1315.png"))
+
     def first(status):
         d = day0
         while d <= ts("2025-06-08 00:00"):
@@ -111,6 +121,9 @@ def main():
         "label_text_height_px": round(full.label_height, 2),
         "labels_under_panel_day_0605": full.panel_hits,
         "image_px": [2400, 1350],
+        "labels_drawn_day_0605_light": len(light.visible_labels),
+        "labels_under_panel_day_0605_light": light.panel_hits,
+        "candles_under_panel_day_0605": full.candles_under_panel,
         "events_day_0605": len(day_events),
         "outcomes_day_0605": dict(collections.Counter(e.status for e in day_events)),
         "physical_entries_total": eng.physical_entries,
