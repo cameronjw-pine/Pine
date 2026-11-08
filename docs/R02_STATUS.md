@@ -4,7 +4,6 @@ Authority alongside `docs/R02_PLAN.md`. Newest first within each section.
 
 ## Open
 - Build `indicators/R02OddsLattice.pine` (Agent A).
-- Mock round 3 (Agent B): apply spec r2.
 - Pine build (Agent A): told about spec r1 mid-build.
 - User compiles the Pine in TradingView (no compiler in build env).
 
@@ -23,4 +22,4 @@ Authority alongside `docs/R02_PLAN.md`. Newest first within each section.
   minutes so touches show within about a minute.
 
 ## Done
-- (none yet)
+- 2026-11-08 · Mock renderer `research/r02_mock/` accepted after 3 review rounds (8 iterations): visual spec r2 confirmed on dark and light, real Binance BTCUSDC 2025-06-01..08 (29.9 fresh touches/day, 7.9% REJECT). Known gaps: gap/censor/ATR-reset and real hygiene-ineligible paths not exercised by this data.

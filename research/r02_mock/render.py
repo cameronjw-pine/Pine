@@ -42,6 +42,12 @@ LAT_STYLE = {                    # h -> (colour, width, style, transp)
     3: (GOLD, 1, "dotted", 65),
     4: (GOLD, 1, "dotted", 80),
 }
+LIGHT_TRANSP = {3: 45, 4: 60}    # r2: h3/h4 on light backgrounds (luminance of chart.bg_color > 128)
+
+
+def is_light(hex_bg):
+    r, g, b = (int(hex_bg[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.299 * r + 0.587 * g + 0.114 * b > 128
 PDHL = ("#808080", 1, "dashed", 0)
 INELIG = ("#9E9E9E", "dotted", 70)                      # r1
 MARKER = {
@@ -75,8 +81,10 @@ def dashes(style, width):
 
 class Chart:
     def __init__(self, eng, t_from, t_to, asof, right_bars=6, panel_at=None,
-                 tooltips=False, focus=None, title_note="", theme="dark"):
+                 tooltips=False, focus=None, title_note="", theme="dark", geom_mode="Nearest"):
         self.th = THEMES[theme]
+        self.light = is_light(self.th["bg"])
+        self.geom_mode = geom_mode          # r2 input: Nearest / All / Off
         self.eng = eng
         self.t_from, self.t_to, self.asof = t_from, t_to, asof
         self.k_from = t_from // M15
@@ -200,6 +208,8 @@ class Chart:
             xa, xb = self.x(lat.pub_time), self.x(lat.end_time)
             for nd, lo, hi, lev in lat.bands:
                 col, w, sty, tr = LAT_STYLE[nd.h]
+                if self.light and nd.h in LIGHT_TRANSP:
+                    tr = LIGHT_TRANSP[nd.h]
                 if not lat.eligible:
                     col, sty, tr = INELIG
                 y = float(lev)
@@ -213,7 +223,8 @@ class Chart:
                 y = float(val)
                 ax.plot([xa, xb], [y, y], color=col, alpha=alpha(tr), lw=w * PT, zorder=4,
                         **dashes(sty, 1))
-                self._end_label(ax, xb, y, name, col, 1.0, "pdhl")
+                if latest:                         # r2: PDH/PDL labels on the latest day only
+                    self._end_label(ax, xb, y, name, col, 1.0, "pdhl")
 
     def _end_label(self, ax, xb, y, text, col, a, kind):
         trans = offset_copy(ax.transData, fig=self.fig, x=3 * PT, y=0, units="points")
@@ -224,11 +235,23 @@ class Chart:
     # -------------------------------------------------------------------
     def _events(self, ax):
         eng = self.eng
+        # r2: geometry for one pending event only (nearest level to the last close, ties -> newest)
+        pend = [e for e in eng.events if e.t_min < self.asof and e.status_at(self.asof) == "PENDING"]
+        geom = set()
+        if self.geom_mode == "All":
+            geom = set(map(id, pend))
+        elif self.geom_mode == "Nearest" and pend:
+            last = float(eng.close_at[max(t for t in eng.close_at if t <= self.asof)])
+            best = min(enumerate(pend), key=lambda ie: (abs(ie[1].level - last), -ie[0]))[1]
+            geom = {id(best)}
+        self.pending_at_asof = len(pend)
+        self.geoms_drawn = 0
         for ev in eng.events:
             if not (self.t_from <= ev.t_min < self.t_to) or ev.t_min >= self.asof:
                 continue
             st = ev.status_at(self.asof)
-            show_geom = st == "PENDING" or ev is self.focus
+            show_geom = id(ev) in geom or ev is self.focus
+            self.geoms_drawn += show_geom
             xe = self.x(ev.bar * M15)
             if show_geom:
                 xh = self.x((ev.bar + W_BARS - 1) * M15)

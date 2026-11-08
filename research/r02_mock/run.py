@@ -53,9 +53,11 @@ def main():
 
     # extra: light theme at a moment with pending events (candles only up to that moment)
     pt = day0 + 13 * 3600 + 15 * 60
-    Chart(eng, pt - 5 * 3600, pt, asof=pt, right_bars=14, theme="light",
-          title_note=f"{a.day} 13:15 UTC · LIGHT THEME · live snapshot with pending markers and geometry").render(
-        os.path.join(a.out_dir, "extra_light_pending_1315.png"))
+    snaps = {}
+    for th in ("light", "dark"):
+        snaps[th] = Chart(eng, pt - 5 * 3600, pt, asof=pt, right_bars=14, theme=th,
+                          title_note=f"{a.day} 13:15 UTC · {th.upper()} THEME · live snapshot, pending geometry mode Nearest"
+                          ).render(os.path.join(a.out_dir, f"extra_{th}_pending_1315.png"))
 
     def first(status):
         d = day0
@@ -121,6 +123,10 @@ def main():
         "label_text_height_px": round(full.label_height, 2),
         "labels_under_panel_day_0605": full.panel_hits,
         "image_px": [2400, 1350],
+        "pending_events_1315": snaps["dark"].pending_at_asof,
+        "pending_geometries_drawn_1315": snaps["dark"].geoms_drawn,
+        "pending_geometries_drawn_1315_light": snaps["light"].geoms_drawn,
+        "pending_geometries_drawn_day_full": full.geoms_drawn,
         "labels_drawn_day_0605_light": len(light.visible_labels),
         "labels_under_panel_day_0605_light": light.panel_hits,
         "candles_under_panel_day_0605": full.candles_under_panel,
