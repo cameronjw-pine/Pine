@@ -1,0 +1,702 @@
+//@version=6
+// ═════════════════════════════════════════════════════════════════════════════
+//  R02 {2,3} ODDS LATTICE — FRESH-TOUCH REACTION MAP
+//
+//  Premise (hypothetical): this indicator assumes R02's G, N and A slots were
+//  all SUPPORTED, so the 41-node {2,3} odds lattice on the prior UTC day's
+//  range is treated as a validated reaction map under R02's exact contract.
+//
+//  Authority: docs/R02_PLAN.md.
+//    Geometry  nodes (a,b), |a|+|b| ≤ 4, odds o = 2^a·3^b, f = o/(1+o);
+//              level = L + f·(H−L), inclusive band f ± 1/4100 (A1 anchor).
+//    Contract  M1 path O→L→H→C (C ≥ O) else O→H→L→C via intrabars, fresh
+//              entry (no entry in this or the prior 20 M15 bars, 20 known
+//              bars), frozen Wilder ATR14 of the last completed M15 bar,
+//              W = 12 bars: BREAK π ≥ 1 · REJECT π ≤ 0.25 and R ≥ 1 ·
+//              INDETERMINATE · CENSORED on source gaps.
+//    Output    level map + fresh-touch markers + pending rejection geometry,
+//              status panel and alerts. It never prints buy/sell.
+// ═════════════════════════════════════════════════════════════════════════════
+indicator("R02 {2,3} Odds Lattice", shorttitle = "R02 Lattice", overlay = true,
+     max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  0 · CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+int   N_NODES     = 41
+float EPS         = 1.0 / 4100.0               // band half-width in range units
+int   MS_MIN      = 60000
+int   MS_M15      = 900000
+int   MS_DAY      = 86400000
+int   W_BARS      = 12                          // horizon: bars t .. t+11
+int   FRESH_BARS  = 20
+int   ATR_LEN     = 14
+int   HYG_WIN     = 1440                        // rolling residual window
+int   HYG_MIN     = 720                         // values needed before flagging
+float HYG_K       = 10.0
+float TICK_GATE   = 1.0 / 41000.0
+int   MAX_MARKERS = 300
+int   MAX_KEYS    = 200
+
+color C_LAT  = #E8A317                          // lattice gold
+color C_DIM  = #9E9E9E                          // ineligible / indeterminate
+color C_PD   = #808080                          // PDH / PDL
+color C_PEND = #B0BEC5
+color C_REJ  = #26A69A
+color C_BRK  = #EF5350
+color C_NONE = color.new(#000000, 100)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  1 · INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+string G_DSP = "Display"
+int  lblMaxH   = input.int(2, "Label max height", minval = 0, maxval = 4, group = G_DSP,
+     tooltip = "Node labels are drawn for nodes with height |a|+|b| up to this value (2 → 13 labels).")
+int  daysN     = input.int(2, "Lattice days drawn", minval = 1, maxval = 5, group = G_DSP)
+bool showGeo   = input.bool(true, "Show pending geometry", group = G_DSP)
+bool showRes   = input.bool(true, "Show resolved markers", group = G_DSP)
+bool showPanel = input.bool(true, "Show panel", group = G_DSP)
+
+string G_CON = "Contract"
+bool hygOn   = input.bool(true, "Hygiene gate", group = G_CON,
+     tooltip = "Pine approximation of thesis E13: a residual ln(mid) step is flagged when the rolling window of up to 1440 unflagged residuals holds ≥ 720 values and |r| > 10 × sample SD. A flagged residual in the anchor day (or 23:59 → 00:00) makes the next day ineligible.")
+bool reqFull = input.bool(true, "Require complete prior day", group = G_CON,
+     tooltip = "Prior UTC day must have all 1440 M1 bars. Disable for symbols that do not trade 24/7.")
+
+string G_ALR = "Alerts"
+bool alertsOn = input.bool(true, "Fresh-touch alerts", group = G_ALR)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  2 · TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+// One qualifying fresh-touch event.
+type Ev
+    int   band                                  // node index (sorted by f) = band identity
+    float level                                 // node centre price, frozen
+    int   side                                  // +1 from below, -1 from above
+    float atr                                   // ATR of the last completed M15 bar, frozen
+    int   entryT                                // open time of the entry M1
+    int   seq                                   // containing M15 bar = floor(time / 15m)
+    float pi                                    // running π (penetration, ATR units)
+    float rr                                    // running R (rejection, ATR units)
+    int   state                                 // 0 PENDING 1 REJECT 2 BREAK 3 INDETERMINATE 4 CENSORED
+    label mk
+    box   tol
+    line  rejL
+    line  brkL
+
+// Drawings of one published lattice day.
+type DayDraw
+    int          day
+    array<line>  lns
+    array<label> lbs
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  3 · DATA REQUEST (single call, global scope)
+// ─────────────────────────────────────────────────────────────────────────────
+[iT, iO, iH, iL, iC] = request.security_lower_tf(syminfo.tickerid, "1", [time, open, high, low, close],
+     ignore_invalid_timeframe = true, calc_bars_count = 100000)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  4 · STATE
+// ─────────────────────────────────────────────────────────────────────────────
+// node registry, sorted by f ascending (built on the first bar)
+var array<float>  nF   = array.new<float>()
+var array<int>    nNum = array.new<int>()
+var array<int>    nDen = array.new<int>()
+var array<int>    nHt  = array.new<int>()
+var array<string> nLbl = array.new<string>()
+
+// current UTC day statistics and the record of the day before it
+var int   curDay = na
+var int   dN     = 0
+var float dH     = na
+var float dL     = na
+var bool  dHyg   = false
+var int   pDay   = na
+var int   pN     = 0
+var float pH     = na
+var float pL     = na
+var bool  pHyg   = false
+
+// published lattice of the current evaluation day
+var bool   published = false
+var bool   drawOk    = false                    // anchor H/L exist
+var bool   trackOk   = false                    // H > L: bands are tracked
+var bool   dayElig   = false
+var string dayReason = ""
+var int    ancDay    = na
+var float  ancL      = na
+var float  ancH      = na
+var array<float> bLvl = array.new<float>(N_NODES, 0.0)
+var array<float> bLo  = array.new<float>(N_NODES, 0.0)
+var array<float> bHi  = array.new<float>(N_NODES, 0.0)
+
+// M1 path state
+var int   insideIdx = -1                        // band holding the last path point (bands are disjoint)
+var float prevPx    = na                        // last path point (previous M1 close)
+
+// hygiene residual chain and rolling window (ring buffer)
+var array<float> hWin = array.new<float>()
+var int   hHead     = 0
+var float hSum      = 0.0
+var float hSq       = 0.0
+var int   hPushes   = 0
+var int   lastMinT  = na
+var float lastLnMid = na
+
+// M15 bar engine (15m chart only)
+var int   lastFinSeq = na
+var int   knownCnt   = 0                        // consecutive fully observed, tracked M15 bars
+var float atrLast    = na                       // ATR after the last completed bar
+var int   seedN      = 0
+var float seedSum    = 0.0
+var bool  atrReset   = true                     // script start counts as a recovery
+var float prevBarC   = na
+
+// freshness clock per band identity: M15 seq of the last physical entry
+var array<int> lastEnt = array.new<int>(N_NODES, -1)
+
+// events and drawings
+var array<Ev>      pend = array.new<Ev>()
+var array<Ev>      evAll = array.new<Ev>()
+var array<DayDraw> days = array.new<DayDraw>()
+varip array<string> fired = array.new<string>()  // alert keys survive realtime rollback
+
+// symbol price precision for text
+f_dec(float mt) =>
+    int d = 0
+    while d < 10 and math.abs(mt * math.pow(10.0, d) - math.round(mt * math.pow(10.0, d))) > 1e-6
+        d += 1
+    d
+var int PX_DEC = f_dec(syminfo.mintick)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  5 · NODE REGISTRY
+// ─────────────────────────────────────────────────────────────────────────────
+if barstate.isfirst
+    array<float> tF = array.new<float>()
+    array<int>   tN = array.new<int>()
+    array<int>   tD = array.new<int>()
+    array<int>   tH = array.new<int>()
+    for a = -4 to 4
+        for b = -4 to 4
+            if math.abs(a) + math.abs(b) <= 4
+                int num = math.round(math.pow(2.0, math.max(a, 0)) * math.pow(3.0, math.max(b, 0)))
+                int den = math.round(math.pow(2.0, math.max(-a, 0)) * math.pow(3.0, math.max(-b, 0)))
+                array.push(tF, float(num) / float(num + den))
+                array.push(tN, num)
+                array.push(tD, den)
+                array.push(tH, math.abs(a) + math.abs(b))
+    array<int> ord = array.sort_indices(tF, order.ascending)
+    for k = 0 to array.size(ord) - 1
+        int q = array.get(ord, k)
+        array.push(nF,   array.get(tF, q))
+        array.push(nNum, array.get(tN, q))
+        array.push(nDen, array.get(tD, q))
+        array.push(nHt,  array.get(tH, q))
+        array.push(nLbl, str.tostring(array.get(tN, q)) + ":" + str.tostring(array.get(tD, q)))
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  6 · HELPERS — text, style
+// ─────────────────────────────────────────────────────────────────────────────
+// digits → digits with thousands separators
+f_grp(string s) =>
+    string out = ""
+    int n = str.length(s)
+    for i = 0 to n - 1
+        out += str.substring(s, i, i + 1)
+        int rem = n - 1 - i
+        if rem > 0 and rem % 3 == 0
+            out += ","
+    out
+
+// fixed-decimal number text (no reliance on format-string grouping)
+f_num(float x, int dec, bool grp) =>
+    string out = "—"
+    if not na(x)
+        float sc  = math.pow(10.0, dec)
+        int   tot = math.round(math.abs(x) * sc)
+        int   ip  = int(math.floor(tot / sc))
+        int   fp  = tot - math.round(ip * sc)
+        string si = str.tostring(ip)
+        if grp
+            si := f_grp(si)
+        string sf = ""
+        if dec > 0
+            sf := str.tostring(fp)
+            while str.length(sf) < dec
+                sf := "0" + sf
+            sf := "." + sf
+        out := (x < 0 and tot > 0 ? "-" : "") + si + sf
+    out
+
+f_px(float x) => f_num(x, PX_DEC, true)
+f_2(float x)  => f_num(x, 2, false)
+
+f_lineCol(int h, bool elig) =>
+    elig ? color.new(C_LAT, h <= 1 ? 0 : h == 2 ? 40 : h == 3 ? 65 : 80) : color.new(C_DIM, 85)
+f_lineStyle(int h, bool elig) =>
+    not elig or h >= 3 ? line.style_dotted : line.style_solid
+f_lineW(int h) =>
+    h == 0 ? 2 : 1
+f_lblCol(int h, bool elig) =>
+    h <= 2 ? color.new(elig ? C_LAT : C_DIM, 0) : f_lineCol(h, elig)
+
+f_stName(int st) =>
+    st == 0 ? "PENDING" : st == 1 ? "REJECT" : st == 2 ? "BREAK" : st == 3 ? "INDETERMINATE" : "CENSORED"
+f_stCol(int st) =>
+    st == 0 ? C_PEND : st == 1 ? C_REJ : st == 2 ? C_BRK : st == 3 ? C_DIM : color.new(C_DIM, 60)
+
+f_tip(Ev e) =>
+    array.get(nLbl, e.band) + " · " + (e.side == 1 ? "from below" : "from above") + " · ATR " + f_px(e.atr) +
+     " · " + f_stName(e.state) + " (π " + f_2(e.pi) + ", R " + f_2(e.rr) + ")"
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  7 · HELPERS — bands (sorted, disjoint: min gap 3/700 of range > 2ε)
+// ─────────────────────────────────────────────────────────────────────────────
+// first band whose upper edge is ≥ p (binary search over sorted edges)
+f_bandFirst(float p) =>
+    int lo = 0
+    int hi = N_NODES
+    while lo < hi
+        int md = int(math.floor((lo + hi) / 2))
+        if array.get(bHi, md) < p
+            lo := md + 1
+        else
+            hi := md
+    lo
+
+// band containing p, or -1
+f_bandAt(float p) =>
+    int j = f_bandFirst(p)
+    j < N_NODES and array.get(bLo, j) <= p ? j : -1
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  8 · HELPERS — events
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve an event: geometry removed, marker recoloured (or removed)
+f_finish(Ev e, int st) =>
+    e.state := st
+    if not na(e.tol)
+        box.delete(e.tol)
+        e.tol := box(na)
+    if not na(e.rejL)
+        line.delete(e.rejL)
+        e.rejL := line(na)
+    if not na(e.brkL)
+        line.delete(e.brkL)
+        e.brkL := line(na)
+    if not na(e.mk)
+        if showRes
+            label.set_color(e.mk, f_stCol(st))
+            label.set_tooltip(e.mk, f_tip(e))
+        else
+            label.delete(e.mk)
+            e.mk := label(na)
+    true
+
+// apply one path point; true when π reaches 1 (BREAK)
+f_updOne(Ev e, float p) =>
+    float d = (p - e.level) * e.side / e.atr    // > 0 on the penetration side
+    e.pi := math.max(e.pi, d)
+    e.rr := math.max(e.rr, -d)
+    e.pi >= 1.0
+
+// apply one path point to every pending event
+f_updAll(float p) =>
+    int n = array.size(pend)
+    if n > 0
+        for i = n - 1 to 0
+            Ev e = array.get(pend, i)
+            if f_updOne(e, p)
+                f_finish(e, 2)
+                array.remove(pend, i)
+    true
+
+// censor pending events whose horizon [seq, seq+11] overlaps M15 bars [sA, sB]
+f_censor(int sA, int sB) =>
+    int n = array.size(pend)
+    if n > 0
+        for i = n - 1 to 0
+            Ev e = array.get(pend, i)
+            if e.seq <= sB and e.seq + W_BARS - 1 >= sA
+                f_finish(e, 4)
+                array.remove(pend, i)
+    true
+
+// horizon end (close of bar t+11): REJECT or INDETERMINATE
+f_resolveDue(int sq) =>
+    int n = array.size(pend)
+    if n > 0
+        for i = n - 1 to 0
+            Ev e = array.get(pend, i)
+            if e.seq + W_BARS - 1 <= sq
+                f_finish(e, e.pi <= 0.25 and e.rr >= 1.0 ? 1 : 3)
+                array.remove(pend, i)
+    true
+
+// drop an event and all its drawings (marker FIFO)
+f_drop(Ev old) =>
+    if old.state == 0
+        int n = array.size(pend)
+        if n > 0
+            for i = n - 1 to 0
+                Ev e = array.get(pend, i)
+                if e.band == old.band and e.entryT == old.entryT
+                    array.remove(pend, i)
+    if not na(old.tol)
+        box.delete(old.tol)
+    if not na(old.rejL)
+        line.delete(old.rejL)
+    if not na(old.brkL)
+        line.delete(old.brkL)
+    if not na(old.mk)
+        label.delete(old.mk)
+    true
+
+// a physical entry into band j. Always updates the band clock; creates an
+// event only when the minute qualifies and the band is fresh.
+f_entry(int j, int side, float px, int t, int sq, bool qual, bool gapNow) =>
+    int  le    = array.get(lastEnt, j)
+    bool fresh = le < 0 or sq - le > FRESH_BARS
+    array.set(lastEnt, j, sq)
+    if qual and fresh
+        float lvl = array.get(bLvl, j)
+        float atr = atrLast
+        int   x0  = sq * MS_M15
+        int   x1  = (sq + W_BARS - 1) * MS_M15
+        Ev e = Ev.new(j, lvl, side, atr, t, sq, 0.0, 0.0, 0, label(na), box(na), line(na), line(na))
+        e.mk := label.new(x0, lvl, "", xloc = xloc.bar_time, color = C_PEND,
+             style = side == 1 ? label.style_triangledown : label.style_triangleup, size = size.tiny)
+        if showGeo
+            float tolY = lvl + side * 0.25 * atr
+            e.tol  := box.new(x0, math.max(lvl, tolY), x1, math.min(lvl, tolY), border_color = C_NONE,
+                 border_width = 0, xloc = xloc.bar_time, bgcolor = color.new(C_LAT, 85))
+            e.rejL := line.new(x0, lvl - side * atr, x1, lvl - side * atr, xloc = xloc.bar_time,
+                 color = C_REJ, style = line.style_dashed, width = 1)
+            e.brkL := line.new(x0, lvl + side * atr, x1, lvl + side * atr, xloc = xloc.bar_time,
+                 color = C_BRK, style = line.style_dotted, width = 1)
+        array.push(pend, e)
+        array.push(evAll, e)
+        if array.size(evAll) > MAX_MARKERS
+            f_drop(array.shift(evAll))
+        bool brk = f_updOne(e, px)                // the entry point itself
+        label.set_tooltip(e.mk, f_tip(e))
+        if brk or gapNow
+            f_finish(e, brk ? 2 : 4)
+            array.pop(pend)
+        if alertsOn and barstate.isrealtime
+            string key = str.tostring(j) + "@" + str.tostring(t)
+            if not array.includes(fired, key)
+                array.push(fired, key)
+                if array.size(fired) > MAX_KEYS
+                    array.shift(fired)
+                alert("R02 fresh touch " + array.get(nLbl, j) + " @ " + f_px(lvl) +
+                     (side == 1 ? " from below" : " from above") +
+                     " · reject target " + f_px(lvl - side * atr) +
+                     " · break " + f_px(lvl + side * atr) +
+                     " · horizon ends " + str.format_time((sq + W_BARS) * MS_M15, "HH:mm", "UTC") + " UTC",
+                     alert.freq_all)
+    true
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  9 · HELPERS — lattice drawings
+// ─────────────────────────────────────────────────────────────────────────────
+f_drawDay(int d, int pubT, float lo, float hi, bool elig) =>
+    int xEnd = d + MS_DAY
+    array<line>  ls = array.new<line>()
+    array<label> lb = array.new<label>()
+    for i = 0 to N_NODES - 1
+        int   hh = array.get(nHt, i)
+        float y  = array.get(bLvl, i)
+        array.push(ls, line.new(pubT, y, xEnd, y, xloc = xloc.bar_time, color = f_lineCol(hh, elig),
+             style = f_lineStyle(hh, elig), width = f_lineW(hh)))
+        if hh <= lblMaxH
+            array.push(lb, label.new(xEnd, y, array.get(nLbl, i), xloc = xloc.bar_time, color = C_NONE,
+                 style = label.style_label_left, textcolor = f_lblCol(hh, elig), size = size.tiny))
+    array.push(ls, line.new(pubT, hi, xEnd, hi, xloc = xloc.bar_time, color = C_PD, style = line.style_dashed, width = 1))
+    array.push(ls, line.new(pubT, lo, xEnd, lo, xloc = xloc.bar_time, color = C_PD, style = line.style_dashed, width = 1))
+    array.push(lb, label.new(xEnd, hi, "PDH", xloc = xloc.bar_time, color = C_NONE,
+         style = label.style_label_left, textcolor = C_PD, size = size.tiny))
+    array.push(lb, label.new(xEnd, lo, "PDL", xloc = xloc.bar_time, color = C_NONE,
+         style = label.style_label_left, textcolor = C_PD, size = size.tiny))
+    DayDraw.new(d, ls, lb)
+
+f_delDay(DayDraw dd) =>
+    for ln in dd.lns
+        line.delete(ln)
+    for lb in dd.lbs
+        label.delete(lb)
+    true
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  10 · ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+int  tfSec     = timeframe.in_seconds()
+bool latTF     = timeframe.isintraday and tfSec >= 60 and tfSec <= 900   // lattice
+bool is15      = timeframe.isintraday and tfSec == 900                   // touch engine
+int  seq       = int(math.floor(time / MS_M15))
+bool confirmed = barstate.isconfirmed           // true on every historical bar
+
+// 10.1 whole M15 bars missing from the chart → source gap
+if is15 and not na(lastFinSeq) and seq > lastFinSeq + 1
+    f_censor(lastFinSeq + 1, seq - 1)
+    knownCnt := 0
+    atrLast  := na
+    seedN    := 0
+    seedSum  := 0.0
+    atrReset := true
+    prevBarC := na
+
+// per-bar M15 aggregate (chart bar = M15 bar on the 15m chart)
+int   barCnt = 0
+bool  barGap = false
+float barH   = na
+float barL   = na
+float barC   = na
+
+// 10.2 completed M1 intrabars, chronological. On an unconfirmed realtime
+//      execution the developing minute is skipped; rollback restores the
+//      bar-open state before every tick, so the completed minutes of this
+//      bar are reprocessed from scratch each time.
+if latTF
+    int nIb = array.size(iT)
+    if nIb > 0
+        for k = 0 to nIb - 1
+            int ibT = array.get(iT, k)
+            if confirmed or ibT + MS_MIN <= timenow
+                float ibO = array.get(iO, k)
+                float ibH = array.get(iH, k)
+                float ibL = array.get(iL, k)
+                float ibC = array.get(iC, k)
+                int   d   = ibT - ibT % MS_DAY
+
+                // (a) UTC day roll
+                if na(curDay) or d != curDay
+                    if not na(curDay)
+                        pDay := curDay
+                        pN   := dN
+                        pH   := dH
+                        pL   := dL
+                        pHyg := dHyg
+                    curDay    := d
+                    dN        := 0
+                    dH        := na
+                    dL        := na
+                    dHyg      := false
+                    published := false
+                    insideIdx := -1
+
+                // (b) hygiene residual on consecutive minutes
+                float mid = (ibH + ibL) / 2.0
+                if mid > 0
+                    float x = math.log(mid)
+                    if not na(lastMinT) and ibT - lastMinT == MS_MIN
+                        float r  = x - lastLnMid
+                        int   wn = array.size(hWin)
+                        bool  flagged = false
+                        if wn >= HYG_MIN
+                            float vr = (hSq - hSum * hSum / wn) / (wn - 1)
+                            flagged := math.abs(r) > HYG_K * math.sqrt(math.max(vr, 0.0))
+                        if flagged
+                            dHyg := true
+                            if ibT == d and not na(pDay) and pDay == d - MS_DAY
+                                pHyg := true                // residual 23:59 → 00:00
+                        else
+                            if wn < HYG_WIN
+                                array.push(hWin, r)
+                            else
+                                float old = array.get(hWin, hHead)
+                                array.set(hWin, hHead, r)
+                                hHead := (hHead + 1) % HYG_WIN
+                                hSum  -= old
+                                hSq   -= old * old
+                            hSum    += r
+                            hSq     += r * r
+                            hPushes += 1
+                            if hPushes % HYG_WIN == 0       // exact refresh against drift
+                                hSum := 0.0
+                                hSq  := 0.0
+                                for v in hWin
+                                    hSum += v
+                                    hSq  += v * v
+                    lastMinT  := ibT
+                    lastLnMid := x
+                else
+                    lastMinT := na
+
+                // (c) day statistics
+                dN += 1
+                dH := na(dH) ? ibH : math.max(dH, ibH)
+                dL := na(dL) ? ibL : math.min(dL, ibL)
+
+                // (d) publication: first M1 open at or after 00:01 UTC
+                bool justPub = false
+                if not published and ibT >= d + MS_MIN
+                    published := true
+                    justPub   := true
+                    bool hasAnc = not na(pDay) and pDay == d - MS_DAY and pN > 0
+                    ancDay := d - MS_DAY
+                    ancL   := hasAnc ? pL : na
+                    ancH   := hasAnc ? pH : na
+                    bool rHyg   = hygOn and hasAnc and pHyg
+                    bool rInc   = not hasAnc or (reqFull and pN != 1440)
+                    bool rTick  = hasAnc and pH > pL and syminfo.mintick / (pH - pL) > TICK_GATE
+                    bool rRange = hasAnc and not (pH > pL)
+                    string rs = rHyg ? "hygiene" : ""
+                    if rInc
+                        rs := rs + (rs == "" ? "" : "/") + "incomplete"
+                    if rTick
+                        rs := rs + (rs == "" ? "" : "/") + "tick"
+                    if rRange
+                        rs := rs + (rs == "" ? "" : "/") + "range"
+                    dayReason := rs
+                    dayElig   := rs == ""
+                    drawOk    := hasAnc
+                    trackOk   := hasAnc and pH > pL
+                    if hasAnc
+                        for i = 0 to N_NODES - 1
+                            float f = array.get(nF, i)
+                            array.set(bLvl, i, pL + f * (pH - pL))
+                            array.set(bLo,  i, pL + (f - EPS) * (pH - pL))
+                            array.set(bHi,  i, pL + (f + EPS) * (pH - pL))
+                        array.push(days, f_drawDay(d, ibT, pL, pH, dayElig))
+                        while array.size(days) > daysN
+                            f_delDay(array.shift(days))
+                    insideIdx := trackOk ? f_bandAt(ibO) : -1   // initialised, no touch
+
+                // (e) M15 bookkeeping: missing minute inside this bar → gap
+                int mi = 0
+                if is15
+                    mi := int(math.floor((ibT - seq * MS_M15) / MS_MIN))
+                    if mi != barCnt
+                        barGap := true
+                        f_censor(seq, seq)
+                    barCnt += 1
+                    barH := na(barH) ? ibH : math.max(barH, ibH)
+                    barL := na(barL) ? ibL : math.min(barL, ibL)
+                    barC := ibC
+
+                // (f) qualification of entries in this minute
+                bool trk  = is15 and published and trackOk
+                bool qual = trk and dayElig and mi != 0 and not na(atrLast) and not na(lastFinSeq) and
+                     lastFinSeq == seq - 1 and knownCnt >= FRESH_BARS
+
+                // (g) previous close → open: a jump, no interpolation
+                if trk and not justPub
+                    int jo = f_bandAt(ibO)
+                    if jo >= 0 and jo != insideIdx
+                        f_entry(jo, prevPx < array.get(bLo, jo) ? 1 : -1, ibO, ibT, seq, qual, barGap)
+                    insideIdx := jo
+                f_updAll(ibO)
+
+                // (h) continuous legs O→L→H→C (C ≥ O) or O→H→L→C
+                float v1 = ibC >= ibO ? ibL : ibH
+                float v2 = ibC >= ibO ? ibH : ibL
+                for leg = 0 to 2
+                    float p0 = leg == 0 ? ibO : leg == 1 ? v1 : v2
+                    float p1 = leg == 0 ? v1 : leg == 1 ? v2 : ibC
+                    if trk
+                        float sLo = math.min(p0, p1)
+                        float sHi = math.max(p0, p1)
+                        bool  up  = p1 > p0
+                        int   j0  = f_bandFirst(sLo)
+                        int   jE  = j0
+                        while jE < N_NODES and array.get(bLo, jE) <= sHi
+                            jE += 1
+                        int newIn = -1
+                        int nI    = jE - j0
+                        if nI > 0
+                            for q = 0 to nI - 1
+                                int j = up ? j0 + q : jE - 1 - q      // path order
+                                if array.get(bLo, j) <= p1 and p1 <= array.get(bHi, j)
+                                    newIn := j
+                                if j != insideIdx
+                                    f_entry(j, up ? 1 : -1, up ? array.get(bLo, j) : array.get(bHi, j),
+                                         ibT, seq, qual, barGap)
+                        insideIdx := newIn
+                    f_updAll(p1)
+                prevPx := ibC
+
+// 10.3 M15 bar close: gaps, ATR, freshness knowledge, horizon resolution
+if is15 and confirmed
+    bool complete = barCnt == 15 and not barGap
+    if not complete
+        f_censor(seq, seq)
+        knownCnt := 0
+        atrLast  := na
+        seedN    := 0
+        seedSum  := 0.0
+        atrReset := true
+        prevBarC := na
+    else
+        float rng = barH - barL
+        float tr  = atrReset or na(prevBarC) ? rng :
+             math.max(rng, math.max(math.abs(barH - prevBarC), math.abs(barL - prevBarC)))
+        atrReset := false
+        if na(atrLast)
+            seedN   += 1
+            seedSum += tr
+            if seedN >= ATR_LEN
+                atrLast := seedSum / ATR_LEN
+        else
+            atrLast := (atrLast * (ATR_LEN - 1) + tr) / ATR_LEN
+        prevBarC := barC
+        knownCnt := published and trackOk ? math.min(knownCnt + 1, 1000000) : 0
+    f_resolveDue(seq)
+    lastFinSeq := seq
+
+// 10.4 pending tooltips show π / R so far
+if array.size(pend) > 0
+    for e in pend
+        label.set_tooltip(e.mk, f_tip(e))
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  11 · PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+var table panel = table.new(position.top_right, 2, 8)
+color P_TXT = chart.fg_color
+color P_BG  = color.new(chart.bg_color, 10)
+
+f_row(table tb, int r, string k, string v) =>
+    table.cell(tb, 0, r, k, text_color = P_TXT, bgcolor = P_BG, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(tb, 1, r, v, text_color = P_TXT, bgcolor = P_BG, text_size = size.tiny, text_halign = text.align_left)
+
+f_near(int idx) =>
+    string out = "—"
+    if idx >= 0
+        float lv = array.get(bLvl, idx)
+        out := array.get(nLbl, idx) + " @ " + f_px(lv)
+        if is15 and not na(atrLast) and atrLast > 0
+            float dist = (lv - close) / atrLast
+            out += " (" + (dist >= 0 ? "+" : "-") + f_2(math.abs(dist)) + " ATR)"
+    out
+
+if barstate.islast
+    table.clear(panel, 0, 0, 1, 7)
+    if showPanel
+        int aIdx = -1
+        int bIdx = -1
+        if drawOk and latTF
+            for i = 0 to N_NODES - 1
+                float lv = array.get(bLvl, i)
+                if lv > close and (aIdx < 0 or lv < array.get(bLvl, aIdx))
+                    aIdx := i
+                if lv < close and (bIdx < 0 or lv > array.get(bLvl, bIdx))
+                    bIdx := i
+        string anc = na(ancDay) or not latTF ? "—" : str.format_time(ancDay, "yyyy-MM-dd", "UTC") +
+             "  L " + f_px(ancL) + " H " + f_px(ancH)
+        string st  = na(ancDay) or not latTF ? "—" : dayElig ? "ELIGIBLE" : "INELIGIBLE: " + dayReason
+        string note = syminfo.prefix + ":" + syminfo.ticker != "BINANCE:BTCUSDC" ? "Outside R02 population" : ""
+        if not is15
+            note := note + (note == "" ? "" : " · ") + "Events need 15m chart"
+        f_row(panel, 0, "R02 {2,3} lattice", "")
+        f_row(panel, 1, "Anchor", anc)
+        f_row(panel, 2, "Status", st)
+        f_row(panel, 3, "ATR15", is15 ? f_px(atrLast) : "—")
+        f_row(panel, 4, "Above", f_near(aIdx))
+        f_row(panel, 5, "Below", f_near(bIdx))
+        f_row(panel, 6, "Pending", str.tostring(array.size(pend)))
+        if note != ""
+            f_row(panel, 7, note, "")
