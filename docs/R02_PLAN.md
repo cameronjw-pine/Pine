@@ -99,13 +99,13 @@ Colours chosen to read on both TradingView dark and light themes.
 | h=4 | `#E8A317`, width 1, dotted, transp 80 |
 | Line extent | from publication time to 24:00 UTC of the evaluation day (projects into the future for the current day); `xloc.bar_time` |
 | PDH / PDL | `#808080`, width 1, dashed, same extent, labels `PDH` / `PDL` |
-| Ineligible day | every lattice line `#9E9E9E` transp 85 dotted; panel shows reason |
-| Node labels | at the line's right end, `label.style_label_left`, no background, text colour = line colour (transp capped at 0 for h≤2), `size.tiny`, text `num:den`. Default shown for h ≤ 2 (13 labels) |
+| Ineligible day | every lattice line `#9E9E9E` transp 70 dotted; panel shows reason |
+| Node labels | latest anchor day only (older drawn days are unlabelled), at the line's right end, `label.style_label_left`, no background, text colour = line colour (transp capped at 0 for h≤2), `size.tiny`, text `num:den`. Default shown for h ≤ 2 (13 labels) |
 | Touch marker | `label` at entry bar, y = level, `size.tiny`. From below → `style_triangledown`; from above → `style_triangleup` (points in the rejection direction) |
-| Marker colour | PENDING `#B0BEC5`; REJECT `#26A69A`; BREAK `#EF5350`; INDETERMINATE `#9E9E9E`; CENSORED `#9E9E9E` transp 60 |
+| Marker colour | Must never equal candle colours. PENDING `#E8A317` transp 0; REJECT `#2962FF` transp 0; BREAK `#E040FB` transp 50; INDETERMINATE `#787B86` transp 50; CENSORED `#787B86` transp 80 |
 | Marker tooltip | `3:2 · from below · ATR 412.50 · REJECT (π 0.12, R 1.43)` (state and π/R so far while pending) |
-| Pending geometry (only while PENDING, deleted on resolution) | tolerance box from level to level ± 0.25·ATR on the penetration side, entry bar → entry bar+11, fill `#E8A317` transp 85, no border; reject-target line at level ∓ 1·ATR, dashed `#26A69A` width 1; break line at level ± 1·ATR, dotted `#EF5350` width 1; both span the horizon |
-| Panel | `table` top-right, 2 columns, `size.tiny`. Rows: `R02 {2,3} lattice` · Anchor `YYYY-MM-DD  L … H …` · Status `ELIGIBLE` or `INELIGIBLE: hygiene/incomplete/tick/range` · `ATR15 …` · `Above 4:3 @ 98,432.10 (+0.31 ATR)` · `Below …` · `Pending n` · a one-line note `Outside R02 population` when the symbol is not BINANCE:BTCUSDC, or `Events need 15m chart` on any other timeframe |
+| Pending geometry (only while PENDING, deleted on resolution) | tolerance box from level to level ± 0.25·ATR on the penetration side, entry bar → entry bar+11, fill `#E8A317` transp 85, no border; reject-target line at level ∓ 1·ATR, dashed `#2962FF` width 1; break line at level ± 1·ATR, dotted `#E040FB` width 1; both span the horizon |
+| Panel | `table` `position.bottom_left`, 2 columns, `size.tiny`, `text_color=chart.fg_color`, `bgcolor=color.new(chart.bg_color, 20)`, no border, left-aligned text. Rows: `R02 {2,3} lattice` · Anchor `YYYY-MM-DD  L … H …` · Status `ELIGIBLE` or `INELIGIBLE: hygiene/incomplete/tick/range` · `ATR15 …` · `Above 4:3 @ 98,432.10 (+0.31 ATR)` · `Below …` · `Pending n` · a one-line note `Outside R02 population` when the symbol is not BINANCE:BTCUSDC, or `Events need 15m chart` on any other timeframe |
 
 Inputs (group names in brackets): [Display] label max height 0–4 (2);
 lattice days drawn 1–5 (2); show pending geometry (on); show resolved markers
@@ -114,6 +114,8 @@ day (on). [Alerts] fresh-touch alerts (on).
 
 Timeframe behaviour: lattice draws on any intraday timeframe ≤ 15m; the
 touch engine runs only on the 15m chart.
+
+Revision r1 (2026-11-08, after mock round 1): marker palette moved off the candle colours, faded BREAK/INDET, panel restyled and moved bottom-left, labels on latest day only, ineligible transp 85→70.
 
 ## 4 · Engineering rules for the Pine file
 
