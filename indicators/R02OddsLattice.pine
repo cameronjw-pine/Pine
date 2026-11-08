@@ -54,7 +54,8 @@ string G_DSP = "Display"
 int  lblMaxH   = input.int(2, "Label max height", minval = 0, maxval = 4, group = G_DSP,
      tooltip = "Node labels are drawn for nodes with height |a|+|b| up to this value (2 → 13 labels).")
 int  daysN     = input.int(2, "Lattice days drawn", minval = 1, maxval = 5, group = G_DSP)
-bool showGeo   = input.bool(true, "Show pending geometry", group = G_DSP)
+string geoMode = input.string("Nearest", "Pending geometry", options = ["Nearest", "All", "Off"], group = G_DSP,
+     tooltip = "Nearest: only the pending event whose level is nearest the last completed M1 close (ties → newest). Re-evaluated every M15 bar and every completed realtime minute.")
 bool showRes   = input.bool(true, "Show resolved markers", group = G_DSP)
 bool showPanel = input.bool(true, "Show panel", group = G_DSP)
 
@@ -236,8 +237,12 @@ f_num(float x, int dec, bool grp) =>
 f_px(float x) => f_num(x, PX_DEC, true)
 f_2(float x)  => f_num(x, 2, false)
 
+// light chart background: luminance 0.299r + 0.587g + 0.114b > 128 (r2)
+bool BG_LIGHT = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color) > 128
+
 f_lineCol(int h, bool elig) =>
-    elig ? color.new(C_LAT, h <= 1 ? 0 : h == 2 ? 40 : h == 3 ? 65 : 80) : color.new(C_DIM, 70)
+    int tr = h <= 1 ? 0 : h == 2 ? 40 : h == 3 ? (BG_LIGHT ? 45 : 65) : (BG_LIGHT ? 60 : 80)
+    elig ? color.new(C_LAT, tr) : color.new(C_DIM, 70)
 f_lineStyle(int h, bool elig) =>
     not elig or h >= 3 ? line.style_dotted : line.style_solid
 f_lineW(int h) =>
@@ -357,6 +362,32 @@ f_drop(Ev old) =>
         label.delete(old.mk)
     true
 
+// pending geometry of one event: tolerance box, reject-target line, break line
+f_geoOff(Ev e) =>
+    if not na(e.tol)
+        box.delete(e.tol)
+        e.tol := box(na)
+    if not na(e.rejL)
+        line.delete(e.rejL)
+        e.rejL := line(na)
+    if not na(e.brkL)
+        line.delete(e.brkL)
+        e.brkL := line(na)
+    true
+
+f_geoOn(Ev e) =>
+    int   x0   = e.seq * MS_M15
+    int   x1   = (e.seq + W_BARS - 1) * MS_M15
+    float lvl  = e.level
+    float tolY = lvl + e.side * 0.25 * e.atr
+    e.tol  := box.new(x0, math.max(lvl, tolY), x1, math.min(lvl, tolY), border_color = C_NONE,
+         border_width = 0, xloc = xloc.bar_time, bgcolor = color.new(C_LAT, 85))
+    e.rejL := line.new(x0, lvl - e.side * e.atr, x1, lvl - e.side * e.atr, xloc = xloc.bar_time,
+         color = C_REJ, style = line.style_dashed, width = 1)
+    e.brkL := line.new(x0, lvl + e.side * e.atr, x1, lvl + e.side * e.atr, xloc = xloc.bar_time,
+         color = C_BRK, style = line.style_dotted, width = 1)
+    true
+
 // a physical entry into band j. Always updates the band clock; creates an
 // event only when the minute qualifies and the band is fresh.
 f_entry(int j, int side, float px, int t, int sq, bool qual, bool gapNow) =>
@@ -367,18 +398,9 @@ f_entry(int j, int side, float px, int t, int sq, bool qual, bool gapNow) =>
         float lvl = array.get(bLvl, j)
         float atr = atrLast
         int   x0  = sq * MS_M15
-        int   x1  = (sq + W_BARS - 1) * MS_M15
         Ev e = Ev.new(j, lvl, side, atr, t, sq, 0.0, 0.0, 0, label(na), box(na), line(na), line(na))
         e.mk := label.new(x0, lvl, "", xloc = xloc.bar_time, color = C_PEND,
              style = side == 1 ? label.style_triangledown : label.style_triangleup, size = size.tiny)
-        if showGeo
-            float tolY = lvl + side * 0.25 * atr
-            e.tol  := box.new(x0, math.max(lvl, tolY), x1, math.min(lvl, tolY), border_color = C_NONE,
-                 border_width = 0, xloc = xloc.bar_time, bgcolor = color.new(C_LAT, 85))
-            e.rejL := line.new(x0, lvl - side * atr, x1, lvl - side * atr, xloc = xloc.bar_time,
-                 color = C_REJ, style = line.style_dashed, width = 1)
-            e.brkL := line.new(x0, lvl + side * atr, x1, lvl + side * atr, xloc = xloc.bar_time,
-                 color = C_BRK, style = line.style_dotted, width = 1)
         array.push(pend, e)
         array.push(evAll, e)
         if array.size(evAll) > MAX_MARKERS
@@ -435,11 +457,14 @@ f_delDay(DayDraw dd) =>
         label.delete(lb)
     true
 
-// node labels live on the latest anchor day only (r1)
+// node labels (r1) and PDH/PDL labels (r2) live on the latest anchor day only
 f_unlabel(DayDraw dd) =>
     for lb in dd.lbs
         label.delete(lb)
     array.clear(dd.lbs)
+    for lb in dd.pdl
+        label.delete(lb)
+    array.clear(dd.pdl)
     true
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -661,10 +686,30 @@ if is15 and confirmed
     f_resolveDue(seq)
     lastFinSeq := seq
 
-// 10.4 pending tooltips show π / R so far
-if array.size(pend) > 0
-    for e in pend
+// 10.4 pending tooltips show π / R so far; pending geometry (r2): Nearest = the
+//      pending event whose level is nearest the last completed M1 close (ties →
+//      newest), All, or Off. Geometry is deleted and redrawn on every execution
+//      (each M15 bar, each realtime update), so no stale geometry survives a
+//      change of nearest event, and the result does not depend on whether
+//      rollback reverts deletions.
+int nP = array.size(pend)
+if nP > 0
+    int   geoIdx = -1
+    float geoD   = na
+    for i = 0 to nP - 1
+        Ev e = array.get(pend, i)
         label.set_tooltip(e.mk, f_tip(e))
+        f_geoOff(e)
+        if not na(prevPx)
+            float dd = math.abs(e.level - prevPx)
+            if na(geoD) or dd <= geoD                 // later (newer) wins ties
+                geoD   := dd
+                geoIdx := i
+    if geoMode == "All"
+        for e in pend
+            f_geoOn(e)
+    else if geoMode == "Nearest" and geoIdx >= 0
+        f_geoOn(array.get(pend, geoIdx))
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  11 · PANEL
